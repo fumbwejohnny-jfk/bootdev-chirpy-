@@ -17,12 +17,11 @@ func main(){
 	// get api config
 	cfg := middleware.NewApiConfig()
 	
-
 	// Serve files from the current directory
 	fileServer := http.FileServer(http.Dir("."))
 	
 	// Handle requests to the root path
-	// router.Handle("/app/",middleware.MiiddlewareLog(http.StripPrefix("/app", fileServer)))
+	// router.Handle("/app/",middleware.MiddlewareLog(http.StripPrefix("/app", fileServer)))
 	router.Handle("/app/", cfg.MiddlewareMetricsInc(http.StripPrefix("/app", fileServer)))
 	
 	// Handle the number of requests
@@ -108,7 +107,7 @@ func main(){
 	})
 
 	// Handle requests to the assets path
-	// router.Handle("/app/assets", fileServer)
+	router.Handle("/app/assets", fileServer)
 
 	server := http.Server{
 		Handler: router,
