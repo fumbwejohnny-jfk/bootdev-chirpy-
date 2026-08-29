@@ -306,6 +306,40 @@ func main(){
 		}
 	})
 
+	// chirp endpoint: singleton
+	router.HandleFunc("GET /api/chirps/{id}", func(w http.ResponseWriter, r *http.Request) {
+		id := r.PathValue("id")
+
+		// id is a string, so convert it to UUID
+		chirpID, err := uuid.Parse(id)
+		if err != nil {
+			http.Error(w, "invalid chirp ID", http.StatusBadRequest)
+			return
+		}
+
+		chirp, err := dbQueries.GetChirp(r.Context(), chirpID)
+		if err != nil {
+			http.Error(w, "chirp not found", http.StatusNotFound)
+			return
+		}
+
+		response := Chirp{
+			ID:        chirp.ID,
+			CreatedAt: chirp.CreatedAt,
+			UpdatedAt: chirp.UpdatedAt,
+			Body:      chirp.Body,
+			UserID:    chirp.UserID,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			http.Error(w, "failed to encode response", http.StatusInternalServerError)
+			return
+		}
+	})
+
 
 
 
