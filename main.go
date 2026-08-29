@@ -197,80 +197,115 @@ func main(){
 	// chirps endpoint
 	router.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 
-	type parameters struct {
-		Body   string    `json:"body"`
-		UserID uuid.UUID `json:"user_id"`
-	}
-
-	var params parameters
-
-	decoder := json.NewDecoder(r.Body)
-	err := decoder.Decode(&params)
-	if err != nil {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "Something went wrong",
-		})
-		return
-	}
-
-	if len([]rune(params.Body)) > 140 {
-		w.Header().Set("Content-Type", "application/json")
-		w.WriteHeader(http.StatusBadRequest)
-		json.NewEncoder(w).Encode(map[string]string{
-			"error": "Chirp is too long",
-		})
-		return
-	}
-
-	var profaneWords = map[string]struct{}{
-		"kerfuffle": {},
-		"sharbert":  {},
-		"fornax":    {},
-	}
-
-	words := strings.Fields(params.Body)
-
-	for i, word := range words {
-		if _, ok := profaneWords[strings.ToLower(word)]; ok {
-			words[i] = "****"
+		type parameters struct {
+			Body   string    `json:"body"`
+			UserID uuid.UUID `json:"user_id"`
 		}
-	}
 
-	cleaned := strings.Join(words, " ")
+		var params parameters
 
-	// Create database parameters using the cleaned body.
-	newChirp := database.CreateChirpParams{
-		Body:   cleaned,
-		UserID: params.UserID,
-	}
+		decoder := json.NewDecoder(r.Body)
+		err := decoder.Decode(&params)
+		if err != nil {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "Something went wrong",
+			})
+			return
+		}
+
+		if len([]rune(params.Body)) > 140 {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusBadRequest)
+			json.NewEncoder(w).Encode(map[string]string{
+				"error": "Chirp is too long",
+			})
+			return
+		}
+
+		var profaneWords = map[string]struct{}{
+			"kerfuffle": {},
+			"sharbert":  {},
+			"fornax":    {},
+		}
+
+		words := strings.Fields(params.Body)
+
+		for i, word := range words {
+			if _, ok := profaneWords[strings.ToLower(word)]; ok {
+				words[i] = "****"
+			}
+		}
+
+		cleaned := strings.Join(words, " ")
+
+		// Create database parameters using the cleaned body.
+		newChirp := database.CreateChirpParams{
+			Body:   cleaned,
+			UserID: params.UserID,
+		}
+		
+		// Create chirp in database.
+		createdChirp, err := dbQueries.CreateChirp(r.Context(), newChirp)
+		if err != nil {
+			fmt.Println(err)
+			http.Error(w, "failed to create chirp", http.StatusInternalServerError)
+			return
+		}
+
+		chirp := Chirp{
+			ID        : createdChirp.ID,
+			CreatedAt : createdChirp.CreatedAt,
+			UpdatedAt : createdChirp.UpdatedAt,
+			Body      : createdChirp.Body,
+			UserID    : createdChirp.UserID,
+		}
+
+		// Return the created chirp as JSON.
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+
+		if err := json.NewEncoder(w).Encode(chirp); err != nil {
+			http.Error(w, "failed to encode response", http.StatusInternalServerError)
+			return
+		}
+	})
+
 	
-	// Create chirp in database.
-	createdChirp, err := dbQueries.CreateChirp(r.Context(), newChirp)
-	if err != nil {
-		fmt.Println(err)
-		http.Error(w, "failed to create chirp", http.StatusInternalServerError)
-		return
-	}
+	// chirps endpoint
+	router.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 
-	chirp := Chirp{
-		ID        : createdChirp.ID,
-		CreatedAt : createdChirp.CreatedAt,
-		UpdatedAt : createdChirp.UpdatedAt,
-		Body      : createdChirp.Body,
-		UserID    : createdChirp.UserID,
-	}
+		chirps, err := dbQueries.GetChirps(r.Context())
+		if err != nil {
+			http.Error(w, "failed to get chirps", http.StatusInternalServerError)
+			return
+		}
 
-	// Return the created chirp as JSON.
-	w.Header().Set("Content-Type", "application/json")
-	w.WriteHeader(http.StatusCreated)
+		// Convert database chirps to API chirps
+		response := make([]Chirp, 0, len(chirps))
 
-	if err := json.NewEncoder(w).Encode(chirp); err != nil {
-		http.Error(w, "failed to encode response", http.StatusInternalServerError)
-		return
-	}
-})
+		for _, dbChirp := range chirps {
+			chirp := Chirp{
+				ID:        dbChirp.ID,
+				CreatedAt: dbChirp.CreatedAt,
+				UpdatedAt: dbChirp.UpdatedAt,
+				Body:      dbChirp.Body,
+				UserID:    dbChirp.UserID,
+			}
+
+			response = append(response, chirp)
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
+
+		if err := json.NewEncoder(w).Encode(response); err != nil {
+			http.Error(w, "failed to encode response", http.StatusInternalServerError)
+			return
+		}
+	})
+
 
 
 
