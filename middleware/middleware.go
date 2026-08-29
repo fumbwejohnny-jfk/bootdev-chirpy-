@@ -3,11 +3,13 @@ package middleware
 import (
 	"log"
 	"net/http"
+	"github.com/fumbwejohnny-jfk/bootdev-chirpy/internal/database"
 	"sync/atomic"
 )
 
 type apiConfig struct {
 	fileserverHits atomic.Int32
+	DB database.Queries
 }
 
 

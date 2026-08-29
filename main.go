@@ -3,25 +3,64 @@ package main
 import (
 	"net/http"
 	"fmt"
+	_ "github.com/lib/pq"
 	"github.com/fumbwejohnny-jfk/bootdev-chirpy/middleware"
+	"github.com/fumbwejohnny-jfk/bootdev-chirpy/internal/database"
+	"github.com/joho/godotenv"
+	"github.com/google/uuid"
+	"database/sql"
 	"encoding/json"
 	"regexp"
 	"strings"
+	"time"
+	"os"
 )
+
+type User struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Email     string    `json:"email"`
+}
+type Chirp struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body     string    `json:"body"`
+	UserID   uuid.UUID `json:"user_id"`
+}
 
 
 func main(){
 
 	router := new(http.ServeMux)
 
+	// get env variables
+	godotenv.Load()
+
+	// get database 
+	dbURL := os.Getenv("DB_URL")
+
+	// connection to database
+	db, err := sql.Open("postgres", dbURL)
+	if err != nil {
+		fmt.Printf("Error connection: %v", err)
+	}
+	defer db.Close()
+
+	// get Queries
+	dbQueries := database.New(db)
+
 	// get api config
 	cfg := middleware.NewApiConfig()
+
+	// store database into apiConfig
+	cfg.DB = *dbQueries
 	
 	// Serve files from the current directory
 	fileServer := http.FileServer(http.Dir("."))
 	
 	// Handle requests to the root path
-	// router.Handle("/app/",middleware.MiddlewareLog(http.StripPrefix("/app", fileServer)))
 	router.Handle("/app/", cfg.MiddlewareMetricsInc(http.StripPrefix("/app", fileServer)))
 	
 	// Handle the number of requests
@@ -38,13 +77,29 @@ func main(){
 		w.Write([]byte(text))
 	})	
 
-	// Handle reset
-	router.HandleFunc("POST /api/reset", func(w http.ResponseWriter, r *http.Request){
+	// Handle reset endpoint
+	router.HandleFunc("POST /admin/reset", func(w http.ResponseWriter, r *http.Request){
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 		w.WriteHeader(http.StatusOK)
 		cfg.ResetMetrics()
-		counter := fmt.Sprintf("Hits: %v", cfg.GetMetrics())
+
+		// get database 
+		platform := os.Getenv("PLATFORM")
+		if platform != "dev" {
+			w.WriteHeader(403)
+			return
+		}
+
+		// delete users
+		err := dbQueries.DeleteUsers(r.Context())
+		if err != nil {
+			fmt.Printf("Error deleting users: %v", err)
+		}
+		// w.WriteHeader(http.StatusOK)
+		//  counter := fmt.Sprintf("Hits: %v", cfg.GetMetrics())
+		 counter := fmt.Sprintf("All users have been deleted and the current user has been cleared.")
 		w.Write([]byte(counter))
+		// fmt.Println("All users have been deleted and the current user has been cleared.")
 	})	
 
 	// Readiness endpoint
@@ -106,9 +161,121 @@ func main(){
 		})
 	})
 
-	// Handle requests to the assets path
-	router.Handle("/app/assets", fileServer)
+	// users endpoint
+	router.HandleFunc("POST /api/users", func(w http.ResponseWriter, r *http.Request) {
+	
+		// Create a new user in the database
+		newUser := database.User {}
 
+		if err := json.NewDecoder(r.Body).Decode(&newUser); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		createdUser, err := dbQueries.CreateUser(r.Context(), newUser.Email)
+		if err != nil {
+			http.Error(w, "failed to create user", http.StatusInternalServerError)
+			return
+		}
+
+		user := User{
+			ID:        createdUser.ID,
+			CreatedAt: createdUser.CreatedAt,
+			UpdatedAt: createdUser.UpdatedAt,
+			Email:     createdUser.Email,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusCreated)
+
+		if err := json.NewEncoder(w).Encode(user); err != nil {
+			http.Error(w, "failed to encode response", http.StatusInternalServerError)
+			return
+		}
+	})
+
+	// chirps endpoint
+	router.HandleFunc("POST /api/chirps", func(w http.ResponseWriter, r *http.Request) {
+
+	type parameters struct {
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+
+	var params parameters
+
+	decoder := json.NewDecoder(r.Body)
+	err := decoder.Decode(&params)
+	if err != nil {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Something went wrong",
+		})
+		return
+	}
+
+	if len([]rune(params.Body)) > 140 {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		json.NewEncoder(w).Encode(map[string]string{
+			"error": "Chirp is too long",
+		})
+		return
+	}
+
+	var profaneWords = map[string]struct{}{
+		"kerfuffle": {},
+		"sharbert":  {},
+		"fornax":    {},
+	}
+
+	words := strings.Fields(params.Body)
+
+	for i, word := range words {
+		if _, ok := profaneWords[strings.ToLower(word)]; ok {
+			words[i] = "****"
+		}
+	}
+
+	cleaned := strings.Join(words, " ")
+
+	// Create database parameters using the cleaned body.
+	newChirp := database.CreateChirpParams{
+		Body:   cleaned,
+		UserID: params.UserID,
+	}
+	
+	// Create chirp in database.
+	createdChirp, err := dbQueries.CreateChirp(r.Context(), newChirp)
+	if err != nil {
+		fmt.Println(err)
+		http.Error(w, "failed to create chirp", http.StatusInternalServerError)
+		return
+	}
+
+	chirp := Chirp{
+		ID        : createdChirp.ID,
+		CreatedAt : createdChirp.CreatedAt,
+		UpdatedAt : createdChirp.UpdatedAt,
+		Body      : createdChirp.Body,
+		UserID    : createdChirp.UserID,
+	}
+
+	// Return the created chirp as JSON.
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusCreated)
+
+	if err := json.NewEncoder(w).Encode(chirp); err != nil {
+		http.Error(w, "failed to encode response", http.StatusInternalServerError)
+		return
+	}
+})
+
+
+
+	// Handle requests to the assets path
+	// router.Handle("/app/assets", fileServer)
 	server := http.Server{
 		Handler: router,
 		Addr:    ":8080",
