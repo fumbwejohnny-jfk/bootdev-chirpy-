@@ -6,6 +6,7 @@ import (
 	_ "github.com/lib/pq"
 	"github.com/fumbwejohnny-jfk/bootdev-chirpy/middleware"
 	"github.com/fumbwejohnny-jfk/bootdev-chirpy/internal/database"
+	"github.com/fumbwejohnny-jfk/bootdev-chirpy/internal/auth"
 	"github.com/joho/godotenv"
 	"github.com/google/uuid"
 	"database/sql"
@@ -47,6 +48,7 @@ func main(){
 		fmt.Printf("Error connection: %v", err)
 	}
 	defer db.Close()
+	fmt.Println("Connected to database successfully!")
 
 	// get Queries
 	dbQueries := database.New(db)
@@ -172,7 +174,21 @@ func main(){
 			return
 		}
 
-		createdUser, err := dbQueries.CreateUser(r.Context(), newUser.Email)
+		// hash the password
+		hashedPassword, err := auth.HashPassword(newUser.Password)
+		if err != nil {
+			http.Error(w, "failed to hash password", http.StatusInternalServerError)
+			return
+		}
+		newUser.Password = hashedPassword	
+
+		// create user in database
+		userParams := database.CreateUserParams{
+			Email: newUser.Email,
+			Password: newUser.Password,
+		}
+
+		createdUser, err := dbQueries.CreateUser(r.Context(), userParams)
 		if err != nil {
 			http.Error(w, "failed to create user", http.StatusInternalServerError)
 			return
@@ -187,6 +203,52 @@ func main(){
 
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusCreated)
+
+		if err := json.NewEncoder(w).Encode(user); err != nil {
+			http.Error(w, "failed to encode response", http.StatusInternalServerError)
+			return
+		}
+	})
+
+	// login endpoint
+	router.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
+	
+		// Create a new user in the database
+		newUser := database.User {}
+
+		if err := json.NewDecoder(r.Body).Decode(&newUser); err != nil {
+			http.Error(w, "invalid request body", http.StatusBadRequest)
+			return
+		}
+
+		// get user from database
+		dbUser, err := dbQueries.GetUserByEmail(r.Context(), newUser.Email)
+		if err != nil {
+			http.Error(w, "failed to get user", http.StatusInternalServerError)
+			return
+		}
+
+		// check password
+		match, err := auth.CheckPasswordHash(newUser.Password, dbUser.Password)
+		if err != nil {
+			http.Error(w, "failed to check password", http.StatusInternalServerError)
+			return
+		}
+		if !match {
+			http.Error(w, "invalid credentials", http.StatusUnauthorized)
+			return
+		}
+		
+		// Return the user as JSON
+		user := User{
+			ID:        dbUser.ID,
+			CreatedAt: dbUser.CreatedAt,
+			UpdatedAt: dbUser.UpdatedAt,
+			Email:     dbUser.Email,
+		}
+
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusOK)
 
 		if err := json.NewEncoder(w).Encode(user); err != nil {
 			http.Error(w, "failed to encode response", http.StatusInternalServerError)
@@ -272,7 +334,6 @@ func main(){
 		}
 	})
 
-	
 	// chirps endpoint
 	router.HandleFunc("GET /api/chirps", func(w http.ResponseWriter, r *http.Request) {
 
@@ -350,6 +411,7 @@ func main(){
 		Addr:    ":8080",
 	}
 
+	fmt.Println("Server is running on http://localhost:8080")
 	// server stats
 	// mux.Handle("/app/", middleware.MiddlewareLog(handler))
 	server.ListenAndServe()
