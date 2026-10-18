@@ -42,6 +42,9 @@ func main(){
 	// get database 
 	dbURL := os.Getenv("DB_URL")
 
+	// get JWT Secret
+	jwtSecret := os.Getenv("JW_SECRET")
+
 	// connection to database
 	db, err := sql.Open("postgres", dbURL)
 	if err != nil {
@@ -58,6 +61,9 @@ func main(){
 
 	// store database into apiConfig
 	cfg.DB = *dbQueries
+
+	// store JWT Secret into apiConfig
+	cfg.JWT = jwtSecret
 	
 	// Serve files from the current directory
 	fileServer := http.FileServer(http.Dir("."))
@@ -190,6 +196,7 @@ func main(){
 
 		createdUser, err := dbQueries.CreateUser(r.Context(), userParams)
 		if err != nil {
+			fmt.Printf("Error creating user: %v", err)
 			http.Error(w, "failed to create user", http.StatusInternalServerError)
 			return
 		}
@@ -212,24 +219,33 @@ func main(){
 
 	// login endpoint
 	router.HandleFunc("POST /api/login", func(w http.ResponseWriter, r *http.Request) {
-	
-		// Create a new user in the database
-		newUser := database.User {}
+		type LoginRequest struct {
+    		Email string `json:"email"`
+    		Password string `json:"password"`
+			Expires_in_seconds int `json:"expires_in_seconds"`
+    	}
 
-		if err := json.NewDecoder(r.Body).Decode(&newUser); err != nil {
+		// Create a new user in the database
+		req := LoginRequest{}
+
+		// decode the request body into the LoginRequest struct
+		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 			http.Error(w, "invalid request body", http.StatusBadRequest)
 			return
 		}
 
+		// get the body fields
+		fmt.Printf("Email: %s, Password: %s\n time in seconds: %d", req.Email, req.Password, req.Expires_in_seconds)
+
 		// get user from database
-		dbUser, err := dbQueries.GetUserByEmail(r.Context(), newUser.Email)
+		dbUser, err := dbQueries.GetUserByEmail(r.Context(), req.Email)
 		if err != nil {
 			http.Error(w, "failed to get user", http.StatusInternalServerError)
 			return
 		}
 
 		// check password
-		match, err := auth.CheckPasswordHash(newUser.Password, dbUser.Password)
+		match, err := auth.CheckPasswordHash(req.Password, dbUser.Password)
 		if err != nil {
 			http.Error(w, "failed to check password", http.StatusInternalServerError)
 			return
@@ -238,8 +254,27 @@ func main(){
 			http.Error(w, "invalid credentials", http.StatusUnauthorized)
 			return
 		}
-		
+
+		// check if expires_in_seconds is valid
+		if req.Expires_in_seconds <= 0  {
+			req.Expires_in_seconds = 3600
+		}else if req.Expires_in_seconds > 3600 {
+			req.Expires_in_seconds = 3600
+		}
+
+		// generate JWT token
+		expiresIn := time.Duration(req.Expires_in_seconds) * time.Second
+		token, err := auth.MakeJWT(dbUser.ID, cfg.JWT, expiresIn)
+		if err != nil {
+			http.Error(w, "failed to generate token", http.StatusInternalServerError)
+			return
+		}
+
 		// Return the user as JSON
+		type LoginResponse struct {
+			User  User   `json:"user"`
+			Token string `json:"token"`
+		}
 		user := User{
 			ID:        dbUser.ID,
 			CreatedAt: dbUser.CreatedAt,
@@ -250,7 +285,7 @@ func main(){
 		w.Header().Set("Content-Type", "application/json")
 		w.WriteHeader(http.StatusOK)
 
-		if err := json.NewEncoder(w).Encode(user); err != nil {
+		if err := json.NewEncoder(w).Encode(LoginResponse{User: user, Token: token}); err != nil {
 			http.Error(w, "failed to encode response", http.StatusInternalServerError)
 			return
 		}
@@ -264,10 +299,29 @@ func main(){
 			UserID uuid.UUID `json:"user_id"`
 		}
 
+		// Bearer token validation
+		token, err := auth.GetBearerToken(r.Header)
+		if err != nil {
+			http.Error(w, "failed to get authorization header", http.StatusUnauthorized)
+			return
+		}
+		if token == "" {
+			http.Error(w, "missing Authorization header", http.StatusUnauthorized)
+			return
+		}
+
+		validatedUserID, err := auth.ValidateJWT(token, cfg.JWT)
+		if err != nil {
+			http.Error(w, "failed to validate token", http.StatusUnauthorized)
+			return
+		}
+
+
+
 		var params parameters
 
 		decoder := json.NewDecoder(r.Body)
-		err := decoder.Decode(&params)
+		err = decoder.Decode(&params)
 		if err != nil {
 			w.Header().Set("Content-Type", "application/json")
 			w.WriteHeader(http.StatusBadRequest)
@@ -305,7 +359,7 @@ func main(){
 		// Create database parameters using the cleaned body.
 		newChirp := database.CreateChirpParams{
 			Body:   cleaned,
-			UserID: params.UserID,
+			UserID: validatedUserID,
 		}
 		
 		// Create chirp in database.
@@ -434,19 +488,18 @@ func censoringWords(s string, words []string) string{
 		
 		if strings.Contains(strings.ToLower(s), strings.ToLower(word)){
 			
-			 	if strings.Contains(s, strings.ToUpper(word[:1]) + word[1:]){
-					s = strings.ReplaceAll(s, strings.ToUpper(word[:1]) + word[1:], "****")
-					fmt.Println(s, strings.ToUpper(word[:1]) + word[1:])
-				}
-				if strings.Contains(s, strings.ToUpper(word)){
-					s = strings.ReplaceAll(s, strings.ToUpper(word), "****")
-					fmt.Println(s, strings.ToUpper(word) )
-				}
-				if strings.Contains(s, strings.ToLower(word)){
-					s = strings.ReplaceAll(s, strings.ToLower(word), "****")
-					fmt.Println(s, strings.ToLower(word) )
-				}
-			 
+			if strings.Contains(s, strings.ToUpper(word[:1]) + word[1:]){
+				s = strings.ReplaceAll(s, strings.ToUpper(word[:1]) + word[1:], "****")
+				fmt.Println(s, strings.ToUpper(word[:1]) + word[1:])
+			}
+			if strings.Contains(s, strings.ToUpper(word)){
+				s = strings.ReplaceAll(s, strings.ToUpper(word), "****")
+				fmt.Println(s, strings.ToUpper(word) )
+			}
+			if strings.Contains(s, strings.ToLower(word)){
+				s = strings.ReplaceAll(s, strings.ToLower(word), "****")
+				fmt.Println(s, strings.ToLower(word) )
+			}
 		}
 	}
 	fmt.Println(s)

@@ -10,6 +10,7 @@ import (
 type apiConfig struct {
 	fileserverHits atomic.Int32
 	DB database.Queries
+	JWT string
 }
 
 
@@ -38,4 +39,12 @@ func (cfg *apiConfig) GetMetrics() int32 {
 
 func (cfg *apiConfig) ResetMetrics(){
 	cfg.fileserverHits.Store(0)
+}
+
+func (cfg *apiConfig) GetDB() database.Queries {
+	return cfg.DB
+}
+
+func (cfg *apiConfig) GetJWT() string {
+	return cfg.JWT
 }
